@@ -13,10 +13,6 @@ type Handler interface {
 	Serve(*Event)
 }
 
-type Event struct {
-	URI string
-}
-
 type HandlerFunc func(*Event)
 
 func (f HandlerFunc) Serve(e *Event) {
@@ -157,8 +153,9 @@ func HandleFunc(pattern string, handler func(*Event)) {
 // Server defines parameters for connecting to a Redis instance
 // and serving event channgels
 type Server struct {
-	Addr    string  // Address to connect to redis instance, "localhost:6379" if empty
-	Handler Handler // Handler to invoke DefaultServeMux if nil
+	Addr       string  // Address to connect to redis instance, "localhost:6379" if empty
+	Handler    Handler // Handler to invoke DefaultServeMux if nil
+	SubHandler SubscriptionHandler
 }
 
 // serverHandler delegates to either the server's handler or
@@ -178,7 +175,7 @@ func (sh serverHandler) Serve(e *Event) {
 // SubscribeAndServe will subscribe to all provided channels
 // on srv.Addr and then calls Serve to handle events on subscribed
 // Redis channels. If srv.Addr is blank then "localhost" is used
-func (srv *Server) SubscribeAndServe() error {
+func (srv *Server) SubscribeAndServe(addr string, subscriptions []string, router string) error {
 	addr := srv.Addr
 	if addr == "" {
 		addr = "redis://localhost:6379"
@@ -187,90 +184,38 @@ func (srv *Server) SubscribeAndServe() error {
 	if err != nil {
 		panic(err)
 	}
-	return srv.Serve()
+
+	// Register routes with servemux
+	// *This may be taken care of by top level URI registration
+	// ...
+
+	// Register subscriptions and start listening
+	msgStream := make(chan string)
+	srv.SubHandler = SubscriptionHandler{
+		index: make(map[string]subscription),
+		addr:  addr,
+	}
+	srv.SubHandler.CreateSubs(subscriptions, &msgStream)
+	srv.SubHandler.Listen()
+
+	// Spin up DBComponent and set to listen on same msgStream
+	db := new(DBComponent)
+	db.Register(conn, &msgStream)
+	db.Process()
+
+	// Begin serving messages output to dataStream
+	return srv.Serve(db.dataStream)
 }
 
 // Serve will kick off listener for each subscription and then
 // spin and wait for msg events on the event channel. Each event
 // that arrivees on the channel will have handler called.
-func (srv *Server) Serve() error {
+func (srv *Server) Serve(dataStream chan Event) error {
 	for {
-
-	}
-}
-
-// Subscription Handling
-type SubscriptionHandler struct {
-	index map[string]subscription
-}
-
-// Maps a url to redis Subscribe channel
-type subscription struct {
-	psc         *redis.PubSubClient
-	eventStream string
-	msgStream   chan string
-}
-
-func (sh *SubscriptionHandler) CreateSub(eventStream string, msgStream *chan string) {
-	conn, err := redisurl.ConnectToURL("redis://localhost:6379")
-	if err != nil {
-		panic(err)
-	}
-
-	psc := redis.PubSubConn{Conn: conn}
-	ch, err := psc.Subscribe(eventStream)
-	if err != nil {
-		panic(err)
-	}
-
-	sh.index[eventStream] = subscription{&psc, eventStream, msgStream}
-}
-
-// Register an array of subscriptions
-func (sh *SubscriptionHandler) CreateSubs(eventStreams []string, msgStream *chan string) {
-	for eventStream := range eventStreams {
-		sh.CreateSub(eventStream, msgStream)
-	}
-}
-
-// Begin listening on all subscriptions
-// Each subscription will concurrently handle events and output to
-// their associated msgStream
-func (sh *SubscriptionHandler) Listen() {
-	for name, sub := range sh.index {
-		go sub.listen()
-	}
-}
-
-// listen for published events and send to message channel
-func (s subscription) listen() {
-	for {
-		switch v := s.psc.Receive().(type) {
-		case redis.Message:
-			s.msgStream <- string(v.Data)
-		case error:
-			return
+		select {
+		case event := <-dataStream:
+			// go HandleStuff(event)
 		}
+
 	}
-}
-
-// Sandbox
-func sandbox() {
-	sh := new(SubscriptionHandler)
-	sh.index = make(map[string]subscription)
-	msgStream := make(chan string)
-
-	// Can be registered individually
-	sh.CreateSub("projet2500:0:eventStream", &msgStream)
-	sh.CreateSub("projet2500:1:eventStream", &msgStream)
-
-	// Can be registered as a group
-	// *But only if each sub shares an outgoing msgStream
-	eventStream := []string{
-		"projet2500:2:eventStream",
-		"projet2500:3:eventStream",
-		"projet2500:4:eventStream",
-	}
-	sh.CreateSubs(eventStreams, &msgStream)
-	sh.Listen()
 }

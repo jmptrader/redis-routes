@@ -11,6 +11,7 @@ import (
 // Subscription Handling
 type SubscriptionHandler struct {
 	index map[string]subscription
+	addr  string
 }
 
 // Maps a url to redis Subscribe channel
@@ -21,7 +22,7 @@ type subscription struct {
 }
 
 func (sh *SubscriptionHandler) CreateSub(eventStream string, msgStream *chan string) {
-	conn, err := redisurl.ConnectToURL("redis://localhost:6379")
+	conn, err := redisurl.ConnectToURL(srv.addr)
 	if err != nil {
 		panic(err)
 	}
