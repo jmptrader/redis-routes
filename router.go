@@ -200,43 +200,77 @@ func (srv *Server) Serve() error {
 }
 
 // Subscription Handling
-type subscriptionHandler struct {
+type SubscriptionHandler struct {
 	index map[string]subscription
 }
 
 // Maps a url to redis Subscribe channel
 type subscription struct {
-	pubsub  *redis.PubSubClient
-	ch      chan *redis.Message
-	pubChan string
-	msgChan chan string
+	psc         *redis.PubSubClient
+	eventStream string
+	msgStream   chan string
 }
 
-func createSubscription(sh *subscriptionHandler, pubChan string) {
-	// This will need an addredd for using ConnectToURL
-	// Attach to server object?
-	pubsub, err := redisurl.ConnectToURL("redis://localhost:6379")
+func (sh *SubscriptionHandler) CreateSub(eventStream string, msgStream *chan string) {
+	conn, err := redisurl.ConnectToURL("redis://localhost:6379")
 	if err != nil {
 		panic(err)
 	}
 
-	ch, err := pubsub.Subscribe(pubChan)
+	psc := redis.PubSubConn{Conn: conn}
+	ch, err := psc.Subscribe(eventStream)
 	if err != nil {
 		panic(err)
 	}
 
-	sh.index[pubChan] = subscription{pubsub, ch, pubChan}
+	sh.index[eventStream] = subscription{&psc, eventStream, msgStream}
+}
+
+// Register an array of subscriptions
+func (sh *SubscriptionHandler) CreateSubs(eventStreams []string, msgStream *chan string) {
+	for eventStream := range eventStreams {
+		sh.CreateSub(eventStream, msgStream)
+	}
+}
+
+// Begin listening on all subscriptions
+// Each subscription will concurrently handle events and output to
+// their associated msgStream
+func (sh *SubscriptionHandler) Listen() {
+	for name, sub := range sh.index {
+		go sub.listen()
+	}
 }
 
 // listen for published events and send to message channel
-func listen(s subscription) {
+func (s subscription) listen() {
 	for {
-		msg := <-s.ch
-		s.msgChan <- msg
+		switch v := s.psc.Receive().(type) {
+		case redis.Message:
+			s.msgStream <- string(v.Data)
+		case error:
+			return
+		}
 	}
 }
 
-// Function to help me think through problem
-func foo() {
+// Sandbox
+func sandbox() {
+	sh := new(SubscriptionHandler)
+	sh.index = make(map[string]subscription)
+	msgStream := make(chan string)
 
+	// Can be registered individually
+	sh.CreateSub("projet2500:0:eventStream", &msgStream)
+	sh.CreateSub("projet2500:1:eventStream", &msgStream)
+
+	// Can be registered as a group
+	// *But only if each sub shares an outgoing msgStream
+	eventStream := []string{
+		"projet2500:2:eventStream",
+		"projet2500:3:eventStream",
+		"projet2500:4:eventStream",
+	}
+	sh.CreateSubs(eventStreams, &msgStream)
+	sh.Listen()
 }
