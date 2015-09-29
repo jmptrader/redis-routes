@@ -1,4 +1,4 @@
-package main
+package redisroutes
 
 import (
 	"fmt"
@@ -12,5 +12,5 @@ type Event struct {
 }
 
 func (e Event) String() string {
-	return fmt.Sprintf("Key: %s\t| Val: %s\t| Time: %s", e.URI, e.Value, e.Time)
+	return fmt.Sprintf("%s\t| %s\t| %s", e.Time, e.URI, e.Value)
 }
