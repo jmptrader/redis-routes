@@ -1,37 +1,41 @@
-package redisroutes
+package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"sync"
+
+	"github.com/soveran/redisurl"
 )
 
 // Objects implementing the Handler interface can be
 // registered to serve a particular URI in the Redis
 // subscription server
 type Handler interface {
-	Serve(*Event)
+	Serve(w io.Writer, e *Event)
 }
 
-type HandlerFunc func(*Event)
+type HandlerFunc func(io.Writer, *Event)
 
-func (f HandlerFunc) Serve(e *Event) {
-	f(e)
+func (f HandlerFunc) Serve(w io.Writer, e *Event) {
+	f(w, e)
 }
 
 // Helper handlers
 
 // Error outputs a specified error
 // The error message should be plain text
-func Error(error string) {
-	fmt.Printf("Error: %s\n", error)
+func Error(w io.Writer, error string) {
+	fmt.Fprintln(w, error)
 }
 
 // NotFound replies to the event with an error message indicating route
 // not able to be located
-func NotFound(e *Event) {
-	msg := fmt.Sprintf("Route (%s) not found\n", e.URI)
-	Error(msg)
+func NotFound(w io.Writer, e *Event) {
+	msg := fmt.Sprintf("URI not registered (%s)", e.URI)
+	Error(w, msg)
 }
 
 // NotFoundHandler returns a simple handler
@@ -48,9 +52,10 @@ type ServeMux struct {
 }
 
 type muxEntry struct {
-	mu      sync.RWMutex
-	h       Handler
-	pattern string
+	mu       sync.RWMutex
+	h        Handler
+	pattern  string
+	explicit bool
 }
 
 // NewServeMux allocates and returns a new ServeMux
@@ -78,7 +83,6 @@ func uriMatch(pattern, uri string) bool {
 // Find a handler on a handler map given a path string
 // First registered match will win
 func (mux *ServeMux) match(uri string) (h Handler, pattern string) {
-	var n = 0
 	for k, v := range mux.m {
 		if !uriMatch(k, uri) {
 			continue
@@ -110,15 +114,16 @@ func (mux *ServeMux) handler(uri string) (h Handler, pattern string) {
 
 // Serve dispatches the event to the handler whose
 // pattern matches the event URI
-func (mux *ServeMux) Serve(e *Event) {
+func (mux *ServeMux) Serve(w io.Writer, e *Event) {
 	h, _ := mux.Handler(e)
-	h.Serve(e)
+	h.Serve(w, e)
 }
 
 // Handle registers the handler for the given pattern
 // If a handler already exists for pattern, Handle panics.
 func (mux *ServeMux) Handle(pattern string, handler Handler) {
 	mux.mu.Lock()
+	defer mux.mu.Unlock()
 
 	if pattern == "" {
 		panic("invalid pattern " + pattern)
@@ -127,14 +132,14 @@ func (mux *ServeMux) Handle(pattern string, handler Handler) {
 		panic("nil handler")
 	}
 	if mux.m[pattern].explicit {
-		panic("multiple registrations for ", pattern)
+		panic(fmt.Sprintf("multiple registrations for %s\n", pattern))
 	}
 
 	mux.m[pattern] = muxEntry{explicit: true, h: handler, pattern: pattern}
 }
 
 // HandleFunc registers the handler function for the given pattern
-func (mux *ServeMux) HandleFunc(pattern string, handler func(*Event)) {
+func (mux *ServeMux) HandleFunc(pattern string, handler func(io.Writer, *Event)) {
 	mux.Handle(pattern, HandlerFunc(handler))
 }
 
@@ -146,7 +151,7 @@ func Handle(pattern string, handler Handler) { DefaultServeMux.Handle(pattern, h
 // HandleFunc registers the handler function for the given pattern
 // in the DefaultServeMux
 // The documentation for ServeMux explains how patterns are matched
-func HandleFunc(pattern string, handler func(*Event)) {
+func HandleFunc(pattern string, handler func(io.Writer, *Event)) {
 	DefaultServeMux.HandleFunc(pattern, handler)
 }
 
@@ -164,57 +169,66 @@ type serverHandler struct {
 	srv *Server
 }
 
-func (sh serverHandler) Serve(e *Event) {
+func (sh serverHandler) Serve(w io.Writer, e *Event) {
 	handler := sh.srv.Handler
 	if handler == nil {
 		handler = DefaultServeMux
 	}
-	handler.Serve(e)
+	handler.Serve(w, e)
 }
 
 // SubscribeAndServe will subscribe to all provided channels
 // on srv.Addr and then calls Serve to handle events on subscribed
 // Redis channels. If srv.Addr is blank then "localhost" is used
-func (srv *Server) SubscribeAndServe(addr string, subscriptions []string, router string) error {
-	addr := srv.Addr
+func (srv *Server) SubscribeAndServe(addr string, subscriptions []string) error {
 	if addr == "" {
 		addr = "redis://localhost:6379"
 	}
+	srv.Addr = addr
+
 	conn, err := redisurl.ConnectToURL(addr)
 	if err != nil {
 		panic(err)
 	}
 
-	// Register routes with servemux
-	// *This may be taken care of by top level URI registration
-	// ...
-
 	// Register subscriptions and start listening
 	msgStream := make(chan string)
-	srv.SubHandler = SubscriptionHandler{
-		index: make(map[string]subscription),
-		addr:  addr,
-	}
 	srv.SubHandler.CreateSubs(subscriptions, &msgStream)
 	srv.SubHandler.Listen()
 
 	// Spin up DBComponent and set to listen on same msgStream
-	db := new(DBComponent)
+	db := new(RedisComponent)
 	db.Register(conn, &msgStream)
 	db.Process()
 
+	// Spin up connection to other device or io.Writer
+	//  ...
+	writer := os.Stdout
+
 	// Begin serving messages output to dataStream
-	return srv.Serve(db.dataStream)
+	return srv.Serve(writer, db.dataStream)
+}
+
+func SubscribeAndServe(addr string, subscriptions []string) error {
+	srv := new(Server)
+	srv.SubHandler = SubscriptionHandler{
+		index: make(map[string]subscription),
+		addr:  addr,
+	}
+	srv.SubscribeAndServe(addr, subscriptions)
+	return nil
 }
 
 // Serve will kick off listener for each subscription and then
 // spin and wait for msg events on the event channel. Each event
 // that arrivees on the channel will have handler called.
-func (srv *Server) Serve(dataStream chan Event) error {
+func (srv *Server) Serve(w io.Writer, dataStream chan Event) error {
+	// Create serverhandler
 	for {
 		select {
 		case event := <-dataStream:
-			// go HandleStuff(event)
+			serverHandler{srv}.Serve(w, &event)
+			//go HandleStuff(event)
 		}
 
 	}

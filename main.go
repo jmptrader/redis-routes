@@ -1,6 +1,11 @@
-package sandbox
+package main
 
-func sandbox() {
+import (
+	"fmt"
+	"io"
+)
+
+func main() {
 
 	// EventStreams is a string array containing the
 	// names of channels in Redis that you want to be subscribed
@@ -23,13 +28,22 @@ func sandbox() {
 	// a HandlerFunc field of type redisroutes.HandlerFunc each
 	// HandlerFunc will write out to a stream the string value
 	// representation
-	router := NewRouter(routes)
+	//router := NewRouter(routes)
+	HandleFunc("projet2500:0:systemstate", func(w io.Writer, e *Event) {
+		fmt.Fprintln(w, "Hello from projet2500:0:systemstate Handler")
+		fmt.Fprintln(w, e)
+	})
+
+	HandleFunc("projet2500:1:systemstate", func(w io.Writer, e *Event) {
+		fmt.Fprintln(w, "Hello from projet2500:1:systemstate Handler")
+		fmt.Fprintln(w, e)
+	})
 
 	// SubscribeAndServe will fire off all async listeners for registered
 	// channels. It will then spin up the DBComponent associated with the
 	// Server and begin waiting for events on the eventStream. Another
 	// handler component will be retrieving values off the dataStream
 	// and emitting them as string values to the TCPSink
-	redisroutes.SubscribeAndServe("redis://localhost:6379", eventStreams, router)
+	SubscribeAndServe("redis://localhost:6379", eventStreams)
 
 }
