@@ -3,7 +3,6 @@ package redisroutes
 import (
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"sync"
 
@@ -180,11 +179,16 @@ func (sh serverHandler) Serve(w io.Writer, e *Event) {
 // SubscribeAndServe will subscribe to all provided channels
 // on srv.Addr and then calls Serve to handle events on subscribed
 // Redis channels. If srv.Addr is blank then "localhost" is used
-func (srv *Server) SubscribeAndServe(addr string, subscriptions []string) error {
+func (srv *Server) SubscribeAndServe(addr string, subscriptions []string, wr io.Writer) error {
 	if addr == "" {
 		addr = "redis://localhost:6379"
 	}
 	srv.Addr = addr
+
+	srv.SubHandler = SubscriptionHandler{
+		index: make(map[string]subscription),
+		addr:  addr,
+	}
 
 	conn, err := redisurl.ConnectToURL(addr)
 	if err != nil {
@@ -201,22 +205,18 @@ func (srv *Server) SubscribeAndServe(addr string, subscriptions []string) error 
 	db.Register(conn, &msgStream)
 	db.Process()
 
-	// Spin up connection to other device or io.Writer
-	//  ...
-	writer := os.Stdout
-
 	// Begin serving messages output to dataStream
-	return srv.Serve(writer, db.dataStream)
+	return srv.Serve(wr, db.dataStream)
 }
 
-func SubscribeAndServe(addr string, subscriptions []string) error {
+func SubscribeAndServe(addr string, subscriptions []string, wr io.Writer) error {
 	srv := new(Server)
-	srv.SubHandler = SubscriptionHandler{
-		index: make(map[string]subscription),
-		addr:  addr,
-	}
-	srv.SubscribeAndServe(addr, subscriptions)
-	return nil
+	return srv.SubscribeAndServe(addr, subscriptions, wr)
+}
+
+// Convenience wrapper allowing caller to omit the Redis DB address
+func LocalSubscribeAndServe(subscriptions []string, wr io.Writer) error {
+	return SubscribeAndServe("", subscriptions, wr)
 }
 
 // Serve will kick off listener for each subscription and then
@@ -227,8 +227,7 @@ func (srv *Server) Serve(w io.Writer, dataStream chan Event) error {
 	for {
 		select {
 		case event := <-dataStream:
-			serverHandler{srv}.Serve(w, &event)
-			//go HandleStuff(event)
+			go serverHandler{srv}.Serve(w, &event)
 		}
 
 	}

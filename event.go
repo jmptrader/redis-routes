@@ -12,5 +12,5 @@ type Event struct {
 }
 
 func (e Event) String() string {
-	return fmt.Sprintf("%s\t| %s\t| %s", e.Time, e.URI, e.Value)
+	return fmt.Sprintf("%v|%s|%s", e.Time, e.URI, e.Value)
 }

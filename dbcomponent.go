@@ -36,7 +36,7 @@ func (rc RedisComponent) Process() {
 				e := Event{
 					URI:   msg,
 					Value: val,
-					Time:  time.Now(),
+					Time:  time.Now().UTC(),
 				}
 				// Write event to outputStream
 				rc.dataStream <- e
